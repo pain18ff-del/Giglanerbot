@@ -23,9 +23,10 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
-yt_search_results = {}
 
+yt_cache = {}
 DB = "bot.db"
+PAGE_SIZE = 10
 
 
 async def init_db():
@@ -82,7 +83,7 @@ async def search_itunes(query: str):
             return data.get("results", [])
 
 
-async def search_youtube(query: str, limit: int = 5):
+async def search_youtube(query: str, limit: int = 30):
     args = [
         "yt-dlp",
         f"ytsearch{limit}:{query}",
@@ -96,7 +97,7 @@ async def search_youtube(query: str, limit: int = 5):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
     except asyncio.TimeoutError:
         return []
 
@@ -116,6 +117,11 @@ async def search_youtube(query: str, limit: int = 5):
     return results
 
 
+async def search_youtube_one(query: str):
+    results = await search_youtube(query, limit=1)
+    return results[0] if results else None
+
+
 def format_duration(sec):
     if not sec:
         return ""
@@ -125,7 +131,6 @@ def format_duration(sec):
 
 
 def clean_tmp():
-    """Убираем старые файлы"""
     os.makedirs("/tmp/yt", exist_ok=True)
     for f in os.listdir("/tmp/yt"):
         try:
@@ -134,17 +139,18 @@ def clean_tmp():
             pass
 
 
-async def download_file(url, mode):
-    """Скачивает mp3 или mp4. Возвращает путь или None."""
+async def download_file(url, mode, prefix_uid=""):
     os.makedirs("/tmp/yt", exist_ok=True)
-    out_tpl = f"/tmp/yt/{mode}_%(title)s.%(ext)s"
+    tag = f"{mode}_{prefix_uid}"
+    out_tpl = f"/tmp/yt/{tag}_%(title)s.%(ext)s"
 
-    if mode == "audio":
-        args = ["yt-dlp", "-x", "--audio-format", "mp3",
-                "--audio-quality", "192K", "--max-filesize", "45M",
-                "-o", out_tpl, url]
+    if mode"] == "audio":
+        args = ["yt-dlp", "-x",):
+ "--audio-format", "mp3",
+                "--audio       -quality", "192K", "--max-f awaitilesize", "45M",
+                "-o", out call_tpl, url]
     else:
-        args = ["yt-dlp", "-f", "mp4", "--max-filesize", "45M",
+        args. = ["yt-dlp", "-f", "mp4", "--max-filesize", "45M",
                 "-o", out_tpl, url]
 
     try:
@@ -157,16 +163,102 @@ async def download_file(url, mode):
     except asyncio.TimeoutError:
         return None
 
-    prefix = f"{mode}_"
     files = [
         f for f in os.listdir("/tmp/yt")
-        if f.startswith(prefix) and f.endswith((".mp3", ".m4a", ".mp4", ".mkv", ".webm"))
+        if f.startswith(tag) and f.endswith((".mp3", ".m4a", ".mp4", ".mkv", ".webm"))
     ]
     if not files:
         return None
-
     files.sort(key=lambda x: os.path.getmtime(f"/tmp/yt/{x}"), reverse=True)
     return f"/tmp/yt/{files[0]}"
+
+
+async def send_audio_video(message, url, uid_tag=""):
+    clean_tmp()
+    audio_path = await download_file(url, "audio", uid_tag)
+    video_path = await download_file(url, "video", uid_tag)
+
+    if not audio_path and not video_path:
+        return False
+
+    if audio_path:
+        try:
+            name = os.path.basename(audio_path)
+            display = name.split("_", 2)[-1] if "_" in name else name
+            await message.reply_audio(
+                FSInputFile(audio_path, filename=display),
+                title=display.rsplit(".", 1)[0],
+                caption="@giglanerbot",
+            )
+        except Exception as e:
+            print(f"Audio error: {e}")
+
+    if video_path:
+        try:
+            name = os.path.basename(video_path)
+            display = name.split("_", 2)[-1] if "_" in name else name
+            await message.reply_video(
+                FSInputFile(video_path, filename=display),
+                caption="@giglanerbot",
+            )
+        except Exception as e:
+            print(f"Video error: {e}")
+
+    clean_tmp()
+    return True
+
+
+def build_page_kb(uid):
+    data = yt_cache.get(uid)
+    if not data:
+        return None
+    tracks = data["tracks"]
+    page = data["page"]
+    start = page * PAGE_SIZE
+    end = start + PAGE_SIZE
+    page_tracks = tracks[start:end]
+
+    buttons = []
+    for i, t in enumerate(page_tracks):
+        real_idx = start + i
+        dur = format_duration(t.get("duration"))
+        label = t["title"][:55]
+        if dur:
+            label += f"  [{dur}]"
+        buttons.append([InlineKeyboardButton(
+            text=label, callback_data=f"yt_{real_idx}"
+        )])
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️ Назад", callback_data="nav_prev"))
+    if end < len(tracks):
+        nav.append(InlineKeyboardButton(text="➕ Ещё", callback_data="nav_next"))
+    if nav:
+        buttons.append(nav)
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def page_text(uid):
+    data = yt_cache.get(uid)
+    if not data:
+        return "🎵 Танланг:"
+    total = len(data["tracks"])
+    page = data["page"]
+    start = page * PAGE_SIZE + 1
+    end = min((page + 1) * PAGE_SIZE, total)
+    return f"🎵 Танланг: ({start}-{end} из {total})"
+
+
+# ============ ПРИВЕТСТВИЕ ПРИ ДОБАВЛЕНИИ В ГРУППУ ============
+@dp.message(lambda m: m.new_chat_members, content_types=["new_chat_members"])
+async def on_group_add(message: types.Message):
+    me = await bot.get_me()
+    for member in message.new_chat_members:
+        if member.id == me.id:
+            await message.answer("Салом қанжиқчалар”")
+            break
 
 
 @dp.message(Command("start"))
@@ -222,129 +314,105 @@ async def handle_link(message: types.Message):
     log_query(message.from_user, url, "link")
 
     msg = await message.reply("⏳ Юкланяпти...")
+    ok = await send_audio_video(message, url, str(message.from_user.id))
 
-    # Чистим временную папку
-    clean_tmp()
-
-    # 1. Скачиваем музыку
-    audio_path = await download_file(url, "audio")
-
-    # 2. Скачиваем видео
-    video_path = await download_file(url, "video")
-
-    if not audio_path and not video_path:
+    if not ok:
         await msg.edit_text("Қӯтоқ ҳам топилмади(😢")
+    else:
+        try:
+            await msg.delete()
+        except:
+            pass
+
+
+@dp.message(lambda m: m.text and m.text.lower().startswith("найти"))
+async def cmd_naiti(message: types.Message):
+    await save_user(message.from_user)
+    query = message.text[5:].strip()
+
+    if not query:
+        await message.reply("Нима қидирамиз? Масалан: <code>найти Believer</code>")
         return
 
-    await msg.edit_text("📤 Юбориляпти...")
+    log_query(message.from_user, query, "найти")
+    msg = await message.reply("🔍 Қидиряпти...")
 
-    # Отправляем музыку
-    if audio_path:
+    track = await search_youtube_one(query)
+    if not track:
+        await msg.edit_text("Нихуя топилмади🗿💔(")
+        return
+
+    await msg.edit_text(f"⏳ Юкланяпти: {track['title'][:50]}...")
+    ok = await send_audio_video(message, track["url"], str(message.from_user.id))
+
+    if not ok:
+        await msg.edit_text("Қӯтоқ ҳам топилмади(😢")
+    else:
         try:
-            name = os.path.basename(audio_path)
-            await message.reply_audio(
-                FSInputFile(audio_path, filename=name),
-                title=name.rsplit(".", 1)[0].replace("audio_", ""),
-                caption="@giglanerbot",
-            )
-        except Exception as e:
-            print(f"Audio error: {e}")
+            await msg.delete()
+        except:
+            pass
 
-    # Отправляем видео
-    if video_path:
-        try:
-            name = os.path.basename(video_path)
-            await message.reply_video(
-                FSInputFile(video_path, filename=name),
-                caption="@giglanerbot",
-            )
-        except Exception as e:
-            print(f"Video error: {e}")
 
-    # Чистим после отправки
-    clean_tmp()
+@dp.callback_query(lambda c: c.data in ("nav_next", "nav_prev"))
+async def on_nav(call: CallbackQuery):
+    uid = call.from_user.id
+    data = yt_cache.get(uid)
+    if not data:
+        await call.answer("Сессия истекла, напиши заново", show_alert=True)
+        return
+    if call.data == "nav_next":
+        data["page"] += 1
+    else:
+        data["page"] = max(0, data["page"] - 1)
+    kb = build_page_kb(uid)
+    text = page_text(uid)
+    try:
+        await call.message.edit_text(text, reply_markup=kb)
+    except:
+        pass
+    await call.answer()
 
 
 @dp.callback_query(lambda c: c.data.startswith("yt_"))
 async def on_track_choice(call: CallbackQuery):
     uid = call.from_user.id
     idx = int(call.data.replace("yt_", ""))
-    tracks = yt_search_results.get(uid, [])
-
-    if not tracks or idx >= len(tracks):
-        await call.message.edit_text("❌ Трек потерялся, напиши заново")
+    data = yt_cache.get(uid)
+    if not data or idx >= len(data["tracksanswer("Трек потерялся, напиши заново", show_alert=True)
         return
-
-    track = tracks[idx]
-    await call.message.edit_text(f"⏳ Юкланяпти: {track['title']}...")
-
-    clean_tmp()
-
-    audio_path = await download_file(track["url"], "audio")
-    video_path = await download_file(track["url"], "video")
-
-    if not audio_path and not video_path:
+    track = data["tracks"][idx]
+    await call.message.edit_text(f"⏳ Юкланяпти: {track['title'][:50]}...")
+    ok = await send_audio_video(call.message, track["url"], str(uid))
+    if not ok:
         await call.message.edit_text("Қӯтоқ ҳам топилмади(😢")
-        return
-
-    await call.message.edit_text("📤 Юбориляпти...")
-
-    if audio_path:
+    else:
         try:
-            name = os.path.basename(audio_path)
-            await call.message.reply_audio(
-                FSInputFile(audio_path, filename=name),
-                title=name.rsplit(".", 1)[0].replace("audio_", ""),
-                caption="@giglanerbot",
-            )
-        except Exception as e:
-            print(f"Audio error: {e}")
-
-    if video_path:
-        try:
-            name = os.path.basename(video_path)
-            await call.message.reply_video(
-                FSInputFile(video_path, filename=name),
-                caption="@giglanerbot",
-            )
-        except Exception as e:
-            print(f"Video error: {e}")
-
-    clean_tmp()
-    yt_search_results.pop(uid, None)
+            await call.message.delete()
+        except:
+            pass
+    yt_cache.pop(uid, None)
 
 
-@dp.message(lambda m: m.text and not m.text.startswith("/"))
+@dp.message(lambda m: m.text and not m.text.startswith("/") and m.chat.type == "private")
 async def handle_text_search(message: types.Message):
     await save_user(message.from_user)
     text = message.text.strip()
-
     if len(text) < 2 or URL_PATTERN.search(text):
+        return
+    if text.lower().startswith("найти"):
         return
 
     log_query(message.from_user, text, "text")
-
     msg = await message.reply("🔍 Қидиряпти...")
-
-    tracks = await search_youtube(text, limit=5)
-
+    tracks = await search_youtube(text, limit=30)
     if not tracks:
         await msg.edit_text("Нихуя топилмади🗿💔(")
         return
-
     uid = message.from_user.id
-    yt_search_results[uid] = tracks
-
-    buttons = []
-    for i, t in enumerate(tracks):
-        dur = format_duration(t.get("duration"))
-        label = f"{t['title'][:60]}"
-        if dur:
-            label += f"  [{dur}]"
-        buttons.append([InlineKeyboardButton(text=label, callback_data=f"yt_{i}")])
-
-    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    await msg.edit_text("🎵 Танланг:", reply_markup=kb)
+    yt_cache[uid] = {"tracks": tracks, "page": 0, "query": text}
+    kb = build_page_kb(uid)
+    await msg.edit_text(page_text(uid), reply_markup=kb)
 
 
 @dp.inline_query()
