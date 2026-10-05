@@ -144,13 +144,12 @@ async def download_file(url, mode, prefix_uid=""):
     tag = f"{mode}_{prefix_uid}"
     out_tpl = f"/tmp/yt/{tag}_%(title)s.%(ext)s"
 
-    if mode"] == "audio":
-        args = ["yt-dlp", "-x",):
- "--audio-format", "mp3",
-                "--audio       -quality", "192K", "--max-f awaitilesize", "45M",
-                "-o", out call_tpl, url]
+    if mode == "audio":
+        args = ["yt-dlp", "-x", "--audio-format", "mp3",
+                "--audio-quality", "192K", "--max-filesize", "45M",
+                "-o", out_tpl, url]
     else:
-        args. = ["yt-dlp", "-f", "mp4", "--max-filesize", "45M",
+        args = ["yt-dlp", "-f", "mp4", "--max-filesize", "45M",
                 "-o", out_tpl, url]
 
     try:
@@ -251,9 +250,10 @@ def page_text(uid):
     return f"🎵 Танланг: ({start}-{end} из {total})"
 
 
-# ============ ПРИВЕТСТВИЕ ПРИ ДОБАВЛЕНИИ В ГРУППУ ============
-@dp.message(lambda m: m.new_chat_members, content_types=["new_chat_members"])
+@dp.message(lambda m: m.new_chat_members is not None)
 async def on_group_add(message: types.Message):
+    if not message.new_chat_members:
+        return
     me = await bot.get_me()
     for member in message.new_chat_members:
         if member.id == me.id:
@@ -379,7 +379,8 @@ async def on_track_choice(call: CallbackQuery):
     uid = call.from_user.id
     idx = int(call.data.replace("yt_", ""))
     data = yt_cache.get(uid)
-    if not data or idx >= len(data["tracksanswer("Трек потерялся, напиши заново", show_alert=True)
+    if not data or idx >= len(data["tracks"]):
+        await call.answer("Трек потерялся, напиши заново", show_alert=True)
         return
     track = data["tracks"][idx]
     await call.message.edit_text(f"⏳ Юкланяпти: {track['title'][:50]}...")
