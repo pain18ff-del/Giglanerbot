@@ -20,6 +20,7 @@ from aiogram.types import (
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+YOUTUBE_COOKIES = os.getenv("YOUTUBE_COOKIES", "")
 
 bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
@@ -27,6 +28,23 @@ dp = Dispatcher()
 yt_cache = {}
 DB = "bot.db"
 PAGE_SIZE = 10
+COOKIES_PATH = "/tmp/cookies.txt"
+
+
+def save_cookies():
+    """Сохраняем cookies из переменной в файл"""
+    if YOUTUBE_COOKIES:
+        with open(COOKIES_PATH, "w", encoding="utf-8") as f:
+            f.write(YOUTUBE_COOKIES.replace("\\n", "\n"))
+        return True
+    return False
+
+
+def cookies_arg():
+    """Возвращает аргумент --cookies если файл есть"""
+    if os.path.exists(COOKIES_PATH):
+        return ["--cookies", COOKIES_PATH]
+    return []
 
 
 async def init_db():
@@ -90,7 +108,7 @@ async def search_youtube(query: str, limit: int = 30):
         "--dump-json",
         "--flat-playlist",
         "--no-warnings",
-    ]
+    ] + cookies_arg()
     try:
         proc = await asyncio.create_subprocess_exec(
             *args,
@@ -144,13 +162,15 @@ async def download_file(url, mode, prefix_uid=""):
     tag = f"{mode}_{prefix_uid}"
     out_tpl = f"/tmp/yt/{tag}_%(title)s.%(ext)s"
 
+    base = cookies_arg()
+
     if mode == "audio":
         args = ["yt-dlp", "-x", "--audio-format", "mp3",
                 "--audio-quality", "192K", "--max-filesize", "45M",
-                "-o", out_tpl, url]
+                "-o", out_tpl] + base + [url]
     else:
         args = ["yt-dlp", "-f", "mp4", "--max-filesize", "45M",
-                "-o", out_tpl, url]
+                "-o", out_tpl] + base + [url]
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -158,7 +178,9 @@ async def download_file(url, mode, prefix_uid=""):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await asyncio.wait_for(proc.communicate(), timeout=300)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+        if proc.returncode != 0:
+            print(f"yt-dlp error: {stderr.decode()[-500:]}")
     except asyncio.TimeoutError:
         return None
 
@@ -396,10 +418,12 @@ async def on_track_choice(call: CallbackQuery):
 
 
 @dp.message(lambda m: m.text and not m.text.startswith("/") and m.chat.type == "private")
-async def handle_text_search(message: types.Message):
-    await save_user(message.from_user)
-    text = message.text.strip()
-    if len(text) < 2 or URL_PATTERN.search(text):
+async def handle 📋_text_search(message: types.Message Что):
+    await save_user(message.from делать_user)
+    text = message.text.strip
+
+()
+    if len(text) < 21 or URL_PATTERN.search(text):
         return
     if text.lower().startswith("найти"):
         return
@@ -459,8 +483,13 @@ async def inline_music(query: types.InlineQuery):
 
 
 async def main():
+    save_cookies()
     await init_db()
     print("Бот ишлаяпти")
+    if os.path.exists(COOKIES_PATH):
+        print("Cookies loaded ✅")
+    else:
+        print("Cookies NOT loaded ❌")
     await dp.start_polling(bot)
 
 
