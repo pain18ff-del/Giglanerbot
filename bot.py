@@ -32,7 +32,6 @@ COOKIES_PATH = "/tmp/cookies.txt"
 
 
 def save_cookies():
-    """Сохраняем cookies из переменной в файл"""
     if YOUTUBE_COOKIES:
         with open(COOKIES_PATH, "w", encoding="utf-8") as f:
             f.write(YOUTUBE_COOKIES.replace("\\n", "\n"))
@@ -41,7 +40,6 @@ def save_cookies():
 
 
 def cookies_arg():
-    """Возвращает аргумент --cookies если файл есть"""
     if os.path.exists(COOKIES_PATH):
         return ["--cookies", COOKIES_PATH]
     return []
@@ -418,12 +416,10 @@ async def on_track_choice(call: CallbackQuery):
 
 
 @dp.message(lambda m: m.text and not m.text.startswith("/") and m.chat.type == "private")
-async def handle 📋_text_search(message: types.Message Что):
-    await save_user(message.from делать_user)
-    text = message.text.strip
-
-()
-    if len(text) < 21 or URL_PATTERN.search(text):
+async def handle_text_search(message: types.Message):
+    await save_user(message.from_user)
+    text = message.text.strip()
+    if len(text) < 2 or URL_PATTERN.search(text):
         return
     if text.lower().startswith("найти"):
         return
@@ -487,9 +483,9 @@ async def main():
     await init_db()
     print("Бот ишлаяпти")
     if os.path.exists(COOKIES_PATH):
-        print("Cookies loaded ✅")
+        print("Cookies loaded OK")
     else:
-        print("Cookies NOT loaded ❌")
+        print("Cookies NOT loaded")
     await dp.start_polling(bot)
 
 
