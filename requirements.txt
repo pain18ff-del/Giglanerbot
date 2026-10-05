@@ -2,3 +2,4 @@ aiogram
 aiohttp
 yt-dlp
 aiosqlite
+flask
