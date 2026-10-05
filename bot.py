@@ -23,7 +23,6 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
-pending = {}
 yt_search_results = {}
 
 DB = "bot.db"
@@ -125,6 +124,51 @@ def format_duration(sec):
     return f"{m}:{s:02d}"
 
 
+def clean_tmp():
+    """Убираем старые файлы"""
+    os.makedirs("/tmp/yt", exist_ok=True)
+    for f in os.listdir("/tmp/yt"):
+        try:
+            os.remove(f"/tmp/yt/{f}")
+        except:
+            pass
+
+
+async def download_file(url, mode):
+    """Скачивает mp3 или mp4. Возвращает путь или None."""
+    os.makedirs("/tmp/yt", exist_ok=True)
+    out_tpl = f"/tmp/yt/{mode}_%(title)s.%(ext)s"
+
+    if mode == "audio":
+        args = ["yt-dlp", "-x", "--audio-format", "mp3",
+                "--audio-quality", "192K", "--max-filesize", "45M",
+                "-o", out_tpl, url]
+    else:
+        args = ["yt-dlp", "-f", "mp4", "--max-filesize", "45M",
+                "-o", out_tpl, url]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=300)
+    except asyncio.TimeoutError:
+        return None
+
+    prefix = f"{mode}_"
+    files = [
+        f for f in os.listdir("/tmp/yt")
+        if f.startswith(prefix) and f.endswith((".mp3", ".m4a", ".mp4", ".mkv", ".webm"))
+    ]
+    if not files:
+        return None
+
+    files.sort(key=lambda x: os.path.getmtime(f"/tmp/yt/{x}"), reverse=True)
+    return f"/tmp/yt/{files[0]}"
+
+
 @dp.message(Command("start"))
 async def on_start(message: types.Message):
     await save_user(message.from_user)
@@ -176,77 +220,49 @@ async def handle_link(message: types.Message):
     await save_user(message.from_user)
     url = URL_PATTERN.search(message.text).group(0)
     log_query(message.from_user, url, "link")
-    uid = message.from_user.id
-    pending[uid] = url
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🎵 Мусиқа", callback_data="dl_audio"),
-            InlineKeyboardButton(text="🎬 Видео", callback_data="dl_video"),
-        ]
-    ])
-    await message.reply("Нима юклаб оламиз?", reply_markup=kb)
 
+    msg = await message.reply("⏳ Юкланяпти...")
 
-@dp.callback_query(lambda c: c.data in ("dl_audio", "dl_video"))
-async def on_choice(call: CallbackQuery):
-    uid = call.from_user.id
-    url = pending.get(uid)
-    if not url:
-        await call.message.edit_text("❌ Ссылка йўқолди, қайтадан ташла")
+    # Чистим временную папку
+    clean_tmp()
+
+    # 1. Скачиваем музыку
+    audio_path = await download_file(url, "audio")
+
+    # 2. Скачиваем видео
+    video_path = await download_file(url, "video")
+
+    if not audio_path and not video_path:
+        await msg.edit_text("Қӯтоқ ҳам топилмади(😢")
         return
-    is_audio = call.data == "dl_audio"
-    await call.message.edit_text("⏳ Юкланяпти...")
-    os.makedirs("/tmp/yt", exist_ok=True)
-    out_tpl = "/tmp/yt/%(title)s.%(ext)s"
-    if is_audio:
-        args = ["yt-dlp", "-x", "--audio-format", "mp3",
-                "--audio-quality", "192K", "--max-filesize", "50M",
-                "-o", out_tpl, url]
-    else:
-        args = ["yt-dlp", "-f", "mp4", "--max-filesize", "50M",
-                "-o", out_tpl, url]
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await asyncio.wait_for(proc.communicate(), timeout=300)
-    except asyncio.TimeoutError:
-        await call.message.edit_text("❌ Жуда узоқ давом этди")
-        return
-    files = sorted(
-        [f for f in os.listdir("/tmp/yt")
-         if f.endswith((".mp4", ".mkv", ".webm", ".mp3", ".m4a"))],
-        key=lambda x: os.path.getmtime(f"/tmp/yt/{x}"),
-        reverse=True,
-    )
-    if not files:
-        await call.message.edit_text("Қӯтоқ ҳам топилмади(😢")
-        return
-    path = f"/tmp/yt/{files[0]}"
-    name = files[0]
-    await call.message.edit_text("📤 Юбориляпти...")
-    try:
-        if is_audio:
-            await call.message.reply_audio(
-                FSInputFile(path, filename=name),
-                title=name.rsplit(".", 1)[0],
+
+    await msg.edit_text("📤 Юбориляпти...")
+
+    # Отправляем музыку
+    if audio_path:
+        try:
+            name = os.path.basename(audio_path)
+            await message.reply_audio(
+                FSInputFile(audio_path, filename=name),
+                title=name.rsplit(".", 1)[0].replace("audio_", ""),
                 caption="@giglanerbot",
             )
-        else:
-            await call.message.reply_video(
-                FSInputFile(path, filename=name),
+        except Exception as e:
+            print(f"Audio error: {e}")
+
+    # Отправляем видео
+    if video_path:
+        try:
+            name = os.path.basename(video_path)
+            await message.reply_video(
+                FSInputFile(video_path, filename=name),
                 caption="@giglanerbot",
             )
-    except Exception as e:
-        await call.message.edit_text(f"❌ Хатолик: {e}")
-        return
-    try:
-        os.remove(path)
-    except:
-        pass
-    pending.pop(uid, None)
+        except Exception as e:
+            print(f"Video error: {e}")
+
+    # Чистим после отправки
+    clean_tmp()
 
 
 @dp.callback_query(lambda c: c.data.startswith("yt_"))
@@ -262,50 +278,39 @@ async def on_track_choice(call: CallbackQuery):
     track = tracks[idx]
     await call.message.edit_text(f"⏳ Юкланяпти: {track['title']}...")
 
-    os.makedirs("/tmp/yt", exist_ok=True)
-    out_tpl = "/tmp/yt/%(title)s.%(ext)s"
+    clean_tmp()
 
-    args = ["yt-dlp", "-x", "--audio-format", "mp3",
-            "--audio-quality", "192K", "--max-filesize", "50M",
-            "-o", out_tpl, track["url"]]
+    audio_path = await download_file(track["url"], "audio")
+    video_path = await download_file(track["url"], "video")
 
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await asyncio.wait_for(proc.communicate(), timeout=300)
-    except asyncio.TimeoutError:
-        await call.message.edit_text("❌ Жуда узоқ давом этди")
-        return
-
-    files = sorted(
-        [f for f in os.listdir("/tmp/yt")
-         if f.endswith((".mp3", ".m4a", ".webm", ".mp4"))],
-        key=lambda x: os.path.getmtime(f"/tmp/yt/{x}"),
-        reverse=True,
-    )
-    if not files:
+    if not audio_path and not video_path:
         await call.message.edit_text("Қӯтоқ ҳам топилмади(😢")
         return
 
-    path = f"/tmp/yt/{files[0]}"
-    name = files[0]
     await call.message.edit_text("📤 Юбориляпти...")
-    try:
-        await call.message.reply_audio(
-            FSInputFile(path, filename=name),
-            title=name.rsplit(".", 1)[0],
-            caption="@giglanerbot",
-        )
-    except Exception as e:
-        await call.message.edit_text(f"❌ Хатолик: {e}")
-        return
-    try:
-        os.remove(path)
-    except:
-        pass
+
+    if audio_path:
+        try:
+            name = os.path.basename(audio_path)
+            await call.message.reply_audio(
+                FSInputFile(audio_path, filename=name),
+                title=name.rsplit(".", 1)[0].replace("audio_", ""),
+                caption="@giglanerbot",
+            )
+        except Exception as e:
+            print(f"Audio error: {e}")
+
+    if video_path:
+        try:
+            name = os.path.basename(video_path)
+            await call.message.reply_video(
+                FSInputFile(video_path, filename=name),
+                caption="@giglanerbot",
+            )
+        except Exception as e:
+            print(f"Video error: {e}")
+
+    clean_tmp()
     yt_search_results.pop(uid, None)
 
 
